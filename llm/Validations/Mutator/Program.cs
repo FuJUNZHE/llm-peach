@@ -516,6 +516,11 @@ namespace Peach.LLM.Validations.Mutator
 
         static ReplayResult ReplaySingleIssue(string mutatorName, string expectedStatus, TestLogInfo sample)
         {
+            lock (consoleLock)
+            {
+                WriteColored($"[REPLAY] Starting replay for {mutatorName} ({expectedStatus})\n", ConsoleColor.Cyan);
+            }
+
             var result = new ReplayResult
             {
                 Reproduced = false,
@@ -560,6 +565,14 @@ namespace Peach.LLM.Validations.Mutator
             {
                 result.Attempts = i;
 
+                if (i % 10 == 1 || i <= 3)
+                {
+                    lock (consoleLock)
+                    {
+                        WriteColored($"[REPLAY] Attempt {i}/{attempts} for {mutatorName}\n", ConsoleColor.Cyan);
+                    }
+                }
+
                 var rootClone = ObjectCopier.Clone(replayRoot) as DM;
                 rootClone.dom = dom;
 
@@ -576,6 +589,10 @@ namespace Peach.LLM.Validations.Mutator
                     {
                         result.Reproduced = true;
                         result.ReplayMessage = "Replay reproduced mutator creation error.";
+                        lock (consoleLock)
+                        {
+                            WriteColored($"[REPLAY] Reproduced ERROR for {mutatorName} at attempt {i}\n", ConsoleColor.Green);
+                        }
                         return result;
                     }
 
@@ -600,6 +617,10 @@ namespace Peach.LLM.Validations.Mutator
                         result.Reproduced = true;
                         result.MutatedFilePath = mutatedFile;
                         result.ReplayMessage = string.Format("Replay reproduced mutation error: {0}", ex.Message);
+                        lock (consoleLock)
+                        {
+                            WriteColored($"[REPLAY] Reproduced FAIL for {mutatorName} at attempt {i}\n", ConsoleColor.Green);
+                        }
                         FillCrackDetails(result, sample.DataFile, mutatedFile);
                         return result;
                     }
@@ -624,9 +645,25 @@ namespace Peach.LLM.Validations.Mutator
                         result.Reproduced = true;
                         result.MutatedFilePath = mutatedPath;
                         result.ReplayMessage = string.Format("Replay reproduced re-crack failure: {0}", ex.Message);
+                        lock (consoleLock)
+                        {
+                            WriteColored($"[REPLAY] Reproduced FAIL for {mutatorName} at attempt {i}\n", ConsoleColor.Green);
+                        }
                         FillCrackDetails(result, sample.DataFile, mutatedPath);
                         return result;
                     }
+                }
+            }
+
+            lock (consoleLock)
+            {
+                if (result.Reproduced)
+                {
+                    WriteColored($"[REPLAY] REPRODUCED {mutatorName} ({expectedStatus}) in {result.Attempts} attempts\n", ConsoleColor.Green);
+                }
+                else
+                {
+                    WriteColored($"[REPLAY] FAILED to reproduce {mutatorName} ({expectedStatus}) after {result.Attempts} attempts\n", ConsoleColor.Yellow);
                 }
             }
 
