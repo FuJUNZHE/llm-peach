@@ -91,7 +91,7 @@ namespace Peach.LLM.Validations.Mutator
             public override uint Iteration { get; set; } = 0;
         }
 
-        static ConcurrentDictionary<TestInfo, List<TestResult>> testResults = new ConcurrentDictionary<TestInfo, List<TestResult>>();
+        static ConcurrentDictionary<TestInfo, ConcurrentBag<TestResult>> testResults = new ConcurrentDictionary<TestInfo, ConcurrentBag<TestResult>>();
 
         static ConcurrentDictionary<string, ConcurrentBag<TestLogInfo>> failLogs = new ConcurrentDictionary<string, ConcurrentBag<TestLogInfo>>();
 
@@ -223,104 +223,98 @@ namespace Peach.LLM.Validations.Mutator
 
         static void Test(DataElement root)
         {
-            // Initialize test results for all tests first
             foreach (var test in tests)
             {
-                testResults.TryAdd(test, new List<TestResult>());
+                testResults.TryAdd(test, new ConcurrentBag<TestResult>());
             }
 
-            // Run tests in parallel
-            Parallel.ForEach(tests, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, (test, loopState) =>
+            int totalWork = tests.Count * testIterations;
+            var logInterval = Math.Max(1, totalWork / 40); // ~40 progress lines regardless of scale
+
+            Parallel.For(0, totalWork, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, globalIdx =>
             {
-                var testIndex = tests.IndexOf(test) + 1;
-                var testResultList = testResults[test];
+                int testIdx = globalIdx / testIterations;
+                int iter = globalIdx % testIterations + 1; // 1-based iteration number
+                var test = tests[testIdx];
 
-                for (int i = 0; i < testIterations; i++)
+                if (globalIdx % logInterval == 0)
                 {
-                    if (i % 10 == 0)
+                    lock (consoleLock)
                     {
-                        lock (consoleLock)
-                        {
-                            WriteColored($"TESTING [{testIndex:000}/{tests.Count:000}][{i + 1:000}/{testIterations}] {test.MutatorType.Name} on {test.Element.fullName}\n", ConsoleColor.Yellow);
-                        }
-                    }
-
-                    var rootClone = ObjectCopier.Clone(root) as DM;
-                    rootClone.dom = dom;
-                    var elem = rootClone.find(test.Element.fullName);
-                    if (!(Activator.CreateInstance(test.MutatorType, new object[] { elem }) is LLMMutator mutator))
-                    {
-                        var mutatorName = test.MutatorType.Name;
-                        var logs = errorLogs.GetOrAdd(mutatorName, _ => new ConcurrentBag<TestLogInfo>());
-                        logs.Add(new TestLogInfo
-                        {
-                            DataFile = test.DataFile,
-                            ElementFullName = elem.fullName,
-                            Iteration = i + 1,
-                            Message = $"Failed to create mutator of type {test.MutatorType.FullName}",
-                            StackTrace = null
-                        });
-                        lock (testResultList)
-                        {
-                            testResultList.Add(TestResult.Error);
-                        }
-                        continue;
-                    }
-                    mutator.context = new MockStrategy();
-                    BitwiseStream v;
-                    try
-                    {
-                        mutator.randomMutation(elem);
-                        v = rootClone.Value;
-                    }
-                    catch (Exception ex)
-                    {
-                        var mutatorName = test.MutatorType.Name;
-                        var logs = errorLogs.GetOrAdd(mutatorName, _ => new ConcurrentBag<TestLogInfo>());
-                        logs.Add(new TestLogInfo
-                        {
-                            DataFile = test.DataFile,
-                            ElementFullName = elem.fullName,
-                            Iteration = i + 1,
-                            Message = ex.Message,
-                            StackTrace = ex.StackTrace
-                        });
-                        lock (testResultList)
-                        {
-                            testResultList.Add(TestResult.Error);
-                        }
-                        continue;
-                    }
-                    var dataCracker = new DataCracker();
-                    try
-                    {
-                        var dataModelClone = ObjectCopier.Clone(originalDataModel);
-                        dataModelClone.dom = dom;
-                        dataCracker.CrackData(dataModelClone, new BitStream(v));
-                        lock (testResultList)
-                        {
-                            testResultList.Add(TestResult.Pass);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        var mutatorName = test.MutatorType.Name;
-                        var logs = failLogs.GetOrAdd(mutatorName, _ => new ConcurrentBag<TestLogInfo>());
-                        logs.Add(new TestLogInfo
-                        {
-                            DataFile = test.DataFile,
-                            ElementFullName = elem.fullName,
-                            Iteration = i + 1,
-                            Message = ex.Message,
-                            StackTrace = ex.StackTrace
-                        });
-                        lock (testResultList)
-                        {
-                            testResultList.Add(TestResult.Fail);
-                        }
+                        WriteColored($"TESTING [{testIdx + 1:000}/{tests.Count:000}][{iter:000}/{testIterations}] {test.MutatorType.Name} on {test.Element.fullName}\n", ConsoleColor.Yellow);
                     }
                 }
+
+                RunSingleIteration(test, iter, root);
             });
+        }
+
+        static void RunSingleIteration(TestInfo test, int iteration, DataElement root)
+        {
+            var testResultList = testResults[test];
+
+            var rootClone = ObjectCopier.Clone(root) as DM;
+            rootClone.dom = dom;
+            var elem = rootClone.find(test.Element.fullName);
+            if (!(Activator.CreateInstance(test.MutatorType, new object[] { elem }) is LLMMutator mutator))
+            {
+                var mutatorName = test.MutatorType.Name;
+                var logs = errorLogs.GetOrAdd(mutatorName, _ => new ConcurrentBag<TestLogInfo>());
+                logs.Add(new TestLogInfo
+                {
+                    DataFile = test.DataFile,
+                    ElementFullName = elem.fullName,
+                    Iteration = iteration,
+                    Message = $"Failed to create mutator of type {test.MutatorType.FullName}",
+                    StackTrace = null
+                });
+                testResultList.Add(TestResult.Error);
+                return;
+            }
+            mutator.context = new MockStrategy();
+            BitwiseStream v;
+            try
+            {
+                mutator.randomMutation(elem);
+                v = rootClone.Value;
+            }
+            catch (Exception ex)
+            {
+                var mutatorName = test.MutatorType.Name;
+                var logs = errorLogs.GetOrAdd(mutatorName, _ => new ConcurrentBag<TestLogInfo>());
+                logs.Add(new TestLogInfo
+                {
+                    DataFile = test.DataFile,
+                    ElementFullName = elem.fullName,
+                    Iteration = iteration,
+                    Message = ex.Message,
+                    StackTrace = ex.StackTrace
+                });
+                testResultList.Add(TestResult.Error);
+                return;
+            }
+            var dataCracker = new DataCracker();
+            try
+            {
+                var dataModelClone = ObjectCopier.Clone(originalDataModel);
+                dataModelClone.dom = dom;
+                dataCracker.CrackData(dataModelClone, new BitStream(v));
+                testResultList.Add(TestResult.Pass);
+            }
+            catch (Exception ex)
+            {
+                var mutatorName = test.MutatorType.Name;
+                var logs = failLogs.GetOrAdd(mutatorName, _ => new ConcurrentBag<TestLogInfo>());
+                logs.Add(new TestLogInfo
+                {
+                    DataFile = test.DataFile,
+                    ElementFullName = elem.fullName,
+                    Iteration = iteration,
+                    Message = ex.Message,
+                    StackTrace = ex.StackTrace
+                });
+                testResultList.Add(TestResult.Fail);
+            }
         }
 
         static void ShowResults()
