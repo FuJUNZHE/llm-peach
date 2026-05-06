@@ -101,7 +101,7 @@ namespace Peach.LLM.Validations.Mutator
 
         static readonly List<TestInfo> tests = new List<TestInfo>();
 
-        static readonly Dictionary<string, ReplayResult> replayResults = new Dictionary<string, ReplayResult>();
+        static readonly ConcurrentDictionary<string, ReplayResult> replayResults = new ConcurrentDictionary<string, ReplayResult>();
 
         static readonly NLog.Logger NLogger = LogManager.GetCurrentClassLogger();
 
@@ -111,11 +111,14 @@ namespace Peach.LLM.Validations.Mutator
 
         static string dataFileFolder;
 
+        static string mutatorFilter = null;
+
         static void Main(string[] args)
         {
-            if (args.Length != 3 && args.Length != 4)
+            if (args.Length < 3 || args.Length > 5)
             {
-                Console.WriteLine("Usage: Peach.LLM.Validations.Mutator <pitFilePath> <dataFileFolder> <dataModelName> [<testIterations>]");
+                Console.WriteLine("Usage: Peach.LLM.Validations.Mutator <pitFilePath> <dataFileFolder> <dataModelName> [<testIterations>] [<mutatorFilter>]");
+                Console.WriteLine("  mutatorFilter: comma-separated mutator names to test (e.g. \"JsonMutator,XmlMutator\")");
                 return;
             }
 
@@ -125,17 +128,24 @@ namespace Peach.LLM.Validations.Mutator
             dataFileFolder = args[1];
             dataModelName = args[2];
 
-            if (args.Length == 4)
+            for (int i = 3; i < args.Length; i++)
             {
-                if (!int.TryParse(args[3], out int iterations))
-                {
-                    Console.WriteLine($"Invalid test iterations value: {args[3]}");
-                    return;
-                }
-                testIterations = iterations;
+                if (int.TryParse(args[i], out int iterations))
+                    testIterations = iterations;
+                else
+                    mutatorFilter = args[i];
             }
 
             FindMutators();
+
+            if (!string.IsNullOrEmpty(mutatorFilter))
+            {
+                var filters = mutatorFilter.Split(',')
+                    .Select(f => f.Trim())
+                    .Where(f => !string.IsNullOrEmpty(f))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                mutators.RemoveAll(m => !filters.Contains(m.Name));
+            }
 
             Console.WriteLine($"Found {mutators.Count} mutators to test.");
 
@@ -474,6 +484,17 @@ namespace Peach.LLM.Validations.Mutator
 
             replayResults.Clear();
 
+            // Ensure dom / originalDataModel are loaded (lazy, once)
+            if (dom == null || originalDataModel == null)
+            {
+                var firstFile = Directory.GetFiles(dataFileFolder).FirstOrDefault();
+                if (firstFile != null)
+                    ParseData(pitFilePath, firstFile, dataModelName);
+            }
+
+            // Collect all replay work items
+            var replayItems = new List<(string MutatorName, string ExpectedStatus, TestLogInfo Sample)>();
+
             foreach (var kvp in failLogs)
             {
                 var sample = kvp.Value
@@ -481,11 +502,8 @@ namespace Peach.LLM.Validations.Mutator
                     .ThenBy(e => e.ElementFullName, StringComparer.Ordinal)
                     .ThenBy(e => e.Iteration)
                     .FirstOrDefault();
-                if (sample == null)
-                    continue;
-
-                var result = ReplaySingleIssue(kvp.Key, "FAIL", sample);
-                replayResults[GetReplayKey(kvp.Key, "FAIL")] = result;
+                if (sample != null)
+                    replayItems.Add((kvp.Key, "FAIL", sample));
             }
 
             foreach (var kvp in errorLogs)
@@ -495,12 +513,20 @@ namespace Peach.LLM.Validations.Mutator
                     .ThenBy(e => e.ElementFullName, StringComparer.Ordinal)
                     .ThenBy(e => e.Iteration)
                     .FirstOrDefault();
-                if (sample == null)
-                    continue;
-
-                var result = ReplaySingleIssue(kvp.Key, "ERROR", sample);
-                replayResults[GetReplayKey(kvp.Key, "ERROR")] = result;
+                if (sample != null)
+                    replayItems.Add((kvp.Key, "ERROR", sample));
             }
+
+            if (replayItems.Count == 0)
+                return;
+
+            Console.WriteLine($"Replaying {replayItems.Count} issues using {Environment.ProcessorCount} cpu cores...");
+
+            Parallel.ForEach(replayItems, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, item =>
+            {
+                var result = ReplaySingleIssue(item.MutatorName, item.ExpectedStatus, item.Sample);
+                replayResults[GetReplayKey(item.MutatorName, item.ExpectedStatus)] = result;
+            });
         }
 
         static string GetReplayKey(string mutatorName, string status)
@@ -542,7 +568,7 @@ namespace Peach.LLM.Validations.Mutator
             DataElement replayRoot;
             try
             {
-                replayRoot = ParseData(pitFilePath, sample.DataFile, dataModelName);
+                replayRoot = CrackDataFile(sample.DataFile);
             }
             catch (Exception ex)
             {
@@ -796,6 +822,37 @@ namespace Peach.LLM.Validations.Mutator
             mutators.Clear();
             mutators.AddRange(unique);
             mutators.Sort((a, b) => a.Name.CompareTo(b.Name));
+        }
+
+        static DataElement CrackDataFile(string dataFile)
+        {
+            if (!dom.dataModels.Contains(dataModelName))
+            {
+                throw new Exception($"Failed to find DataModel '{dataModelName}' in Pit File.");
+            }
+            DM dataModel = dom.dataModels[dataModelName];
+
+            if (!File.Exists(dataFile))
+            {
+                throw new FileNotFoundException($"Failed to find file : {dataFile}");
+            }
+
+            byte[] fileBytes = File.ReadAllBytes(dataFile);
+            var dataStream = new BitStream(fileBytes);
+
+            var crackedModel = ObjectCopier.Clone(dataModel);
+            crackedModel.dom = dom;
+
+            if (originalDataModel == null)
+            {
+                originalDataModel = dataModel;
+                originalDataModel.dom = dom;
+            }
+
+            var cracker = new DataCracker();
+            cracker.CrackData(crackedModel, dataStream);
+
+            return crackedModel;
         }
 
         static DataElement ParseData(string pitFile, string dataFile, string modelName)
