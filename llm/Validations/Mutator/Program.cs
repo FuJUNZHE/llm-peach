@@ -50,6 +50,13 @@ namespace Peach.LLM.Validations.Mutator
             public string StackTrace;
         }
 
+        class ReplayItem
+        {
+            public string MutatorName;
+            public string ExpectedStatus;
+            public TestLogInfo Sample;
+        }
+
         class ReplayResult
         {
             public bool Reproduced;
@@ -140,10 +147,11 @@ namespace Peach.LLM.Validations.Mutator
 
             if (!string.IsNullOrEmpty(mutatorFilter))
             {
-                var filters = mutatorFilter.Split(',')
-                    .Select(f => f.Trim())
-                    .Where(f => !string.IsNullOrEmpty(f))
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var filters = new HashSet<string>(
+                    mutatorFilter.Split(',')
+                        .Select(f => f.Trim())
+                        .Where(f => !string.IsNullOrEmpty(f)),
+                    StringComparer.OrdinalIgnoreCase);
                 mutators.RemoveAll(m => !filters.Contains(m.Name));
             }
 
@@ -493,7 +501,7 @@ namespace Peach.LLM.Validations.Mutator
             }
 
             // Collect all replay work items
-            var replayItems = new List<(string MutatorName, string ExpectedStatus, TestLogInfo Sample)>();
+            var replayItems = new List<ReplayItem>();
 
             foreach (var kvp in failLogs)
             {
@@ -503,7 +511,7 @@ namespace Peach.LLM.Validations.Mutator
                     .ThenBy(e => e.Iteration)
                     .FirstOrDefault();
                 if (sample != null)
-                    replayItems.Add((kvp.Key, "FAIL", sample));
+                    replayItems.Add(new ReplayItem { MutatorName = kvp.Key, ExpectedStatus = "FAIL", Sample = sample });
             }
 
             foreach (var kvp in errorLogs)
@@ -514,7 +522,7 @@ namespace Peach.LLM.Validations.Mutator
                     .ThenBy(e => e.Iteration)
                     .FirstOrDefault();
                 if (sample != null)
-                    replayItems.Add((kvp.Key, "ERROR", sample));
+                    replayItems.Add(new ReplayItem { MutatorName = kvp.Key, ExpectedStatus = "ERROR", Sample = sample });
             }
 
             if (replayItems.Count == 0)
