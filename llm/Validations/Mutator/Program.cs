@@ -758,17 +758,40 @@ namespace Peach.LLM.Validations.Mutator
             {
                 using (var process = System.Diagnostics.Process.Start(psi))
                 {
-                    var stdout = process.StandardOutput.ReadToEnd();
-                    var stderr = process.StandardError.ReadToEnd();
-                    process.WaitForExit();
+                    // Read stdout and stderr concurrently to avoid pipe-buffer deadlock
+                    var stdoutTcs = new System.Threading.Tasks.TaskCompletionSource<string>();
+                    var stderrTcs = new System.Threading.Tasks.TaskCompletionSource<string>();
+                    System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try { stdoutTcs.SetResult(process.StandardOutput.ReadToEnd()); }
+                        catch (Exception ex) { stdoutTcs.SetException(ex); }
+                    });
+                    System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try { stderrTcs.SetResult(process.StandardError.ReadToEnd()); }
+                        catch (Exception ex) { stderrTcs.SetException(ex); }
+                    });
+
+                    bool finished = process.WaitForExit(30000);
+                    if (!finished)
+                    {
+                        process.Kill();
+                        return new CrackCommandResult
+                        {
+                            Command = commandText,
+                            Output = "pittool crack timed out after 30s."
+                        };
+                    }
+
+                    var stdout = stdoutTcs.Task.Result;
+                    var stderr = stderrTcs.Task.Result;
 
                     var output = new StringBuilder();
                     output.AppendLine(string.Format("ExitCode: {0}", process.ExitCode));
                     if (!string.IsNullOrEmpty(stdout))
+                        output.AppendLine(stdout);
                     if (!string.IsNullOrEmpty(stderr))
-                    {
                         output.AppendLine(stderr);
-                    }
                     return new CrackCommandResult
                     {
                         Command = commandText,
