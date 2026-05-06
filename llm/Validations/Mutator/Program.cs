@@ -246,6 +246,12 @@ namespace Peach.LLM.Validations.Mutator
                 testResults.TryAdd(test, new ConcurrentBag<TestResult>());
             }
 
+            // Warm up cloners: pre-compile all expression trees once to avoid
+            // redundant compilation under Parallel.For (the global emit lock in
+            // Expression.Compile serializes all threads, causing very low CPU).
+            ObjectCopier.Clone(root);
+            ObjectCopier.Clone(originalDataModel);
+
             int totalWork = tests.Count * testIterations;
             var logInterval = Math.Max(1, totalWork / 40); // ~40 progress lines regardless of scale
 
@@ -529,6 +535,10 @@ namespace Peach.LLM.Validations.Mutator
                 return;
 
             Console.WriteLine($"Replaying {replayItems.Count} issues using {Environment.ProcessorCount} cpu cores...");
+
+            // Warm up cloners in case test phase didn't already
+            if (originalDataModel != null)
+                ObjectCopier.Clone(originalDataModel);
 
             Parallel.ForEach(replayItems, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, item =>
             {
