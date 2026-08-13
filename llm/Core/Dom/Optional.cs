@@ -19,7 +19,7 @@ namespace Peach.LLM.Core.Dom
 	[PitParsable("Optional")]
 	[Parameter("name", typeof(string), "Element name", "")]
 	[Parameter("fieldId", typeof(string), "Element field ID", "")]
-	[Parameter("src", typeof(string), "Reference to element to use in expression. `src` is a dot-separated path that can start from any node; if multiple matches exist, the one with the nearest common ancestor to the current context is selected.", "")]
+	[Parameter("src", typeof(string), "Reference to element to use in expression. `src` can be a dot-separated path, or a relative path using '.' and '..' segments (for example, './field' or '../header.type').", "")]
 	[Parameter("expression", typeof(string), "Scripting expression for conditional inclusion (src value available as 'value'; use '&gt;' for '>' and '&lt;' for '<')", "")]
 	[Parameter("length", typeof(uint?), "Length in data element", "")]
 	[Parameter("lengthType", typeof(LengthType), "Units of the length attribute", "bytes")]
@@ -107,6 +107,13 @@ namespace Peach.LLM.Core.Dom
 
 			DataElement elem = null;
 
+			if (IsRelativePath(SourcePath))
+			{
+				elem = ResolveRelativePath(SourcePath);
+				_refElement = elem;
+				return elem;
+			}
+
 			var p = parent;
 			while (p != null)
 			{
@@ -120,6 +127,67 @@ namespace Peach.LLM.Core.Dom
 
 			_refElement = elem;
 			return elem;
+		}
+
+		private static bool IsRelativePath(string path)
+		{
+			return path == "." || path == ".." ||
+				path.StartsWith("./", StringComparison.Ordinal) ||
+				path.StartsWith("../", StringComparison.Ordinal);
+		}
+
+		private DataElement ResolveRelativePath(string path)
+		{
+			DataElement current = this;
+			var parts = path.Split(new[] { '/' }, StringSplitOptions.None);
+
+			foreach (var part in parts)
+			{
+				if (part.Length == 0 || part == ".")
+					continue;
+
+				if (part == "..")
+				{
+					current = current.parent;
+					if (current == null)
+						return null;
+
+					continue;
+				}
+
+				var container = current as DataElementContainer;
+				if (container == null)
+					return null;
+
+				var child = ResolveChildPath(container, part);
+
+				if (child == null)
+					return null;
+
+				current = child;
+			}
+
+			return current;
+		}
+
+		private static DataElement ResolveChildPath(DataElementContainer container, string path)
+		{
+			DataElement current = container;
+
+			foreach (var name in path.Split(new[] { '.' }, StringSplitOptions.None))
+			{
+				if (name.Length == 0)
+					return null;
+
+				var currentContainer = current as DataElementContainer;
+				DataElement child;
+				if (currentContainer == null || !currentContainer.TryGetValue(name, out child))
+					return null;
+
+				current = child;
+			}
+
+			return current;
 		}
 
 		/// <summary>
