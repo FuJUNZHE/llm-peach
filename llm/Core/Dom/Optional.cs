@@ -293,8 +293,13 @@ namespace Peach.LLM.Core.Dom
 					throw new PeachException(string.Format(
 						"Optional '{0}': Referenced element '{1}' not found", debugName, SourcePath));
 
-				// Get the value from the referenced element
-				var refValue = refElement.DefaultValue;
+				// Flags are containers and do not have a DefaultValue. Their value is
+				// assembled from their child Flag elements in InternalValue.
+				var flags = refElement as Flags;
+				var refValue = flags == null ? refElement.DefaultValue : GetFlagsValue(flags);
+				if (refValue == null)
+					throw new PeachException(string.Format(
+						"Optional '{0}': Referenced element '{1}' has no value", debugName, SourcePath));
 
 				// Create state dictionary similar to SizeRelation
 				var state = new Dictionary<string, object>
@@ -359,6 +364,36 @@ namespace Peach.LLM.Core.Dom
 				throw new PeachException(string.Format(
 					"Error evaluating Optional '{0}' expression '{1}': {2}",
 					debugName, Expression, ex.Message), ex);
+			}
+		}
+
+		private static Variant GetFlagsValue(Flags flags)
+		{
+			var internalValue = flags.InternalValue;
+			if (internalValue == null || internalValue.GetVariantType() != Variant.VariantType.BitStream)
+				throw new PeachException(string.Format(
+					"Optional: Flags element '{0}' did not produce a bit stream value", flags.debugName));
+
+			var stream = (BitwiseStream)internalValue;
+			var position = stream.PositionBits;
+
+			try
+			{
+				stream.SeekBits(0, System.IO.SeekOrigin.Begin);
+
+				ulong bits;
+				var length = (int)flags.lengthAsBits;
+				var read = stream.ReadBits(out bits, length);
+				if (read != length)
+					throw new PeachException(string.Format(
+						"Optional: Could not read the complete value of Flags element '{0}'", flags.debugName));
+
+				var endian = flags.LittleEndian ? Endian.Little : Endian.Big;
+				return new Variant(endian.GetUInt64(bits, length));
+			}
+			finally
+			{
+				stream.PositionBits = position;
 			}
 		}
 
