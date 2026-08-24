@@ -20,7 +20,7 @@ namespace Peach.LLM.Core.Dom
 	[Parameter("name", typeof(string), "Element name", "")]
 	[Parameter("fieldId", typeof(string), "Element field ID", "")]
 	[Parameter("src", typeof(string), "Reference to element to use in expression. `src` can be a dot-separated path, or a relative path using '.' and '..' segments (for example, './field' or '../header.type').", "")]
-	[Parameter("expression", typeof(string), "Scripting expression for conditional inclusion (src value available as 'value'; use '&gt;' for '>' and '&lt;' for '<')", "")]
+	[Parameter("expression", typeof(string), "Scripting expression in *Python* for conditional inclusion (src value available as 'value'; special characters must be escaped using XML entities.)", "")]
 	[Parameter("length", typeof(uint?), "Length in data element", "")]
 	[Parameter("lengthType", typeof(LengthType), "Units of the length attribute", "bytes")]
 	[Parameter("mutable", typeof(bool), "Is element mutable", "true")]
