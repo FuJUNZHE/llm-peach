@@ -114,6 +114,19 @@ namespace Peach.LLM.Core.Dom
 				return elem;
 			}
 
+			// Prefer the current runtime ancestor chain before falling back to the
+			// regular name search.  A Choice candidate is cracked before it becomes
+			// Choice.SelectedElement, so walking down from the Choice at that point
+			// exposes the template in choiceElements instead of the candidate being
+			// cracked.  Matching the path against our ancestors keeps references such
+			// as "connect.msg_body.header.flags" on the runtime candidate.
+			elem = ResolveAncestorPath(SourcePath);
+			if (elem != null)
+			{
+				_refElement = elem;
+				return elem;
+			}
+
 			var p = parent;
 			while (p != null)
 			{
@@ -127,6 +140,57 @@ namespace Peach.LLM.Core.Dom
 
 			_refElement = elem;
 			return elem;
+		}
+
+		private DataElement ResolveAncestorPath(string path)
+		{
+			var parts = path.Split(new[] { '.' }, StringSplitOptions.None);
+			foreach (var part in parts)
+			{
+				if (part.Length == 0)
+					return null;
+			}
+
+			// Stored nearest-first.  For an ancestor at index i, index i - 1 is
+			// the next node on the actual runtime path towards this Optional.
+			var ancestors = new List<DataElement>();
+			for (DataElement current = this; current != null; current = current.parent)
+				ancestors.Add(current);
+
+			for (var i = 0; i < ancestors.Count; ++i)
+			{
+				if (ancestors[i].Name != parts[0])
+					continue;
+
+				var anchor = ancestors[i];
+				var ancestorIndex = i - 1;
+				var partIndex = 1;
+
+				// Consume as much of the path as possible using the actual ancestor
+				// chain.  This also lets a root-qualified path cross an in-progress
+				// Choice candidate without traversing Choice.Children().
+				while (partIndex < parts.Length && ancestorIndex >= 0 &&
+					ancestors[ancestorIndex].Name == parts[partIndex])
+				{
+					anchor = ancestors[ancestorIndex];
+					--ancestorIndex;
+					++partIndex;
+				}
+
+				if (partIndex == parts.Length)
+					return anchor;
+
+				var container = anchor as DataElementContainer;
+				if (container == null)
+					continue;
+
+				var remaining = string.Join(".", parts, partIndex, parts.Length - partIndex);
+				var elem = ResolveChildPath(container, remaining);
+				if (elem != null)
+					return elem;
+			}
+
+			return null;
 		}
 
 		private static bool IsRelativePath(string path)
