@@ -56,7 +56,7 @@ namespace Peach.LLM.Validations.DataModel
 
         private static DataElement ParseData(string dataFile)
         {
-            ClassLoader.Initialize();
+            ClassLoader.Initialize("./Plugins");
 
             var parser = new ProPitParser(null, null, _pitFile);
 
